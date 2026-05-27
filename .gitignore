@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+git.local
+
+# generated stitch artifacts
+/stitch_kevguard_ai_security_dashboard/
 
 # vercel
 .vercel
