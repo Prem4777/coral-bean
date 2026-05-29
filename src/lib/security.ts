@@ -229,22 +229,26 @@ export class RateLimitError extends Error {
 
 export async function queryOSV(dep: Dependency): Promise<Vulnerability[]> {
   try {
-    // Single cross-join: OSV vulns + CISA KEV matched via aliases LIKE '%CVE-XXXX%'
+    // 3-way cross-join: OSV vulns + CISA KEV + NVD CVSS scores in one query
     const rows = extractRows(
       await runCoralSql(
         `SELECT v.id, v.summary, v.details, v.severity, v.affected, v.references, v.aliases,
-                k.cve_id      AS kev_cve_id,
+                k.cve_id          AS kev_cve_id,
                 k.vulnerability_name AS kev_name,
-                k.date_added  AS kev_date_added,
-                k.required_action AS kev_required_action
+                k.date_added      AS kev_date_added,
+                k.required_action AS kev_required_action,
+                n.base_score      AS nvd_base_score,
+                n.base_severity   AS nvd_severity
          FROM osv.query_by_version v
          LEFT JOIN cisa_kev.vulnerabilities k
            ON v.aliases LIKE '%' || k.cve_id || '%'
+         LEFT JOIN nvd.cvss_v3 n
+           ON v.aliases LIKE '%' || n.cve_id || '%'
          WHERE v.package_name = ${sqlString(dep.name)}
            AND v.ecosystem    = ${sqlString(dep.ecosystem)}
            AND v.version      = ${sqlString(dep.version)}
          LIMIT 50`,
-        `OSV × KEV — ${dep.name}@${dep.version} (${dep.ecosystem})`,
+        `OSV × KEV × NVD — ${dep.name}@${dep.version} (${dep.ecosystem})`,
       ),
     );
     if (rows.length > 0) {
@@ -299,9 +303,14 @@ function mapOsvRow(v: any, fromCoral = false): Vulnerability {
     refs.find((r) => r.url?.includes("github.com/advisories"))?.url ??
     refs[0]?.url ?? null;
 
-  // Severity: database_specific label first, then CVSS vector parse
+  // Severity: NVD join first (most authoritative numeric score), then OSV database_specific, then CVSS vector
   let severity: string | null = null;
-  if (dbSpecific?.severity) severity = normalizeSeverityLabel(String(dbSpecific.severity));
+  if (v.nvd_severity) severity = normalizeSeverityLabel(String(v.nvd_severity));
+  if (!severity && v.nvd_base_score != null) {
+    const n = parseFloat(String(v.nvd_base_score));
+    if (!isNaN(n)) severity = cvssScoreToLabel(n);
+  }
+  if (!severity && dbSpecific?.severity) severity = normalizeSeverityLabel(String(dbSpecific.severity));
   if (!severity) severity = extractSeverity(severityRaw);
 
   // KEV status from cross-join columns (Coral) or HTTP aliases fallback
@@ -347,7 +356,7 @@ function extractFixedVersion(v: any): string | null {
   return null;
 }
 
-// ─── NVD fallback for unknown severity ───────────────────────────────────────
+// ─── NVD HTTP fallback (used only when Coral NVD join returns null due to rate limit) ──
 
 const nvdCache = new Map<string, string | null>();
 

@@ -120,20 +120,31 @@ Core data sources: GitHub · OSV · CISA KEV · NVD · EPSS (first.org)
 | OSV | `osv.vulns` | WHERE id (required) |
 | KEV | `cisa_kev.vulnerabilities` | Flat, no join needed for CVE IDs |
 | KEV | `cisa_kev.catalog` | Single-row feed metadata only |
+| NVD | `nvd.vulnerabilities` | cve_id, description, published; filter: cve_id_filter |
+| NVD | `nvd.cvss_v3` | cve_id, base_score, base_severity, vector_string; filter: cve_id_filter |
+| NVD | `nvd.cvss_v2` | cve_id, base_score, severity; filter: cve_id_filter |
+| NVD | `nvd.references` | cve_id, references (JSON); filter: cve_id_filter |
 | GitHub | `github.contents` | WHERE owner, repo, path |
+
+NVD is available via Coral but rate-limited without an API key (5 req/30s). The 3-way join works but may 429 under load — OSV+KEV data still returns if NVD fails.
 
 JSON columns (`severity`, `affected`, `references`, `aliases`) returned as serialized strings — must `JSON.parse()`.
 
-Cross-join pattern (verified working):
+3-way cross-join (OSV + KEV + NVD — verified schema, NVD rate-limited):
 ```sql
 SELECT v.id, v.summary, v.severity, v.affected, v.references, v.aliases,
-       k.cve_id AS kev_cve_id, k.vulnerability_name, k.date_added, k.required_action
+       k.cve_id AS kev_cve_id, k.vulnerability_name, k.date_added, k.required_action,
+       n.base_score AS nvd_base_score, n.base_severity AS nvd_severity
 FROM osv.query_by_version v
 LEFT JOIN cisa_kev.vulnerabilities k
   ON v.aliases LIKE '%' || k.cve_id || '%'
-WHERE v.package_name = 'lodash' AND v.ecosystem = 'npm' AND v.version = '4.17.20'
+LEFT JOIN nvd.cvss_v3 n
+  ON v.aliases LIKE '%' || n.cve_id || '%'
+WHERE v.package_name = 'jquery' AND v.ecosystem = 'npm' AND v.version = '3.4.1'
 LIMIT 50
 ```
+
+Severity resolution order (in code): `nvd_severity` → `nvd_base_score` → `database_specific.severity` → CVSS vector parse → HTTP NVD fallback
 
 ---
 
@@ -141,6 +152,6 @@ LIMIT 50
 
 - DB persistence (Drizzle schema exists, scan-store is in-memory only — data lost on restart)
 - `pyproject.toml` parser not yet added
-- NVD API has rate limits (no API key configured) — may return null for some CVEs
+- NVD via Coral rate-limits without API key — add `NVD_API_KEY` env var to unlock 50 req/30s
 - EPSS fetch adds latency per CVE — consider batching
 - Chat panel not wired to results page (component exists, not rendered)

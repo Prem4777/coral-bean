@@ -137,28 +137,37 @@ export function getCoralAssistantContext() {
   - Columns: cve_id, vendor_project, product, vulnerability_name, date_added, short_description, required_action, due_date, known_ransomware_campaign_use, notes, cwes
 - \`cisa_kev.catalog\` — single-row feed metadata only
 
-### Cross-source JOIN (OSV + KEV in one query)
-Coral supports cross-schema joins. Join OSV vulns to KEV using LIKE on the aliases column:
+### Cross-source JOIN (OSV + KEV + NVD in one query)
+Coral supports 3-way cross-schema joins. NVD is available but rate-limited without an API key (5 req/30s).
 
   SELECT v.id, v.summary, v.severity, v.affected, v.references, v.aliases,
-         k.cve_id      AS kev_cve_id,
+         k.cve_id          AS kev_cve_id,
          k.vulnerability_name AS kev_name,
-         k.date_added  AS kev_date_added,
-         k.required_action AS kev_required_action
+         k.date_added      AS kev_date_added,
+         k.required_action AS kev_required_action,
+         n.base_score      AS nvd_base_score,
+         n.base_severity   AS nvd_severity
   FROM osv.query_by_version v
   LEFT JOIN cisa_kev.vulnerabilities k
     ON v.aliases LIKE '%' || k.cve_id || '%'
-  WHERE v.package_name = 'lodash'
+  LEFT JOIN nvd.cvss_v3 n
+    ON v.aliases LIKE '%' || n.cve_id || '%'
+  WHERE v.package_name = 'jquery'
     AND v.ecosystem    = 'npm'
-    AND v.version      = '4.17.20'
+    AND v.version      = '3.4.1'
   LIMIT 50
 
-- kev_cve_id IS NOT NULL means the vuln is in the CISA KEV catalog (actively exploited)
-- All JSON columns must be JSON.parse()'d after retrieval
-- database_specific is null from Coral — do not rely on it for severity
+- kev_cve_id IS NOT NULL → actively exploited (CISA KEV)
+- nvd_base_score → numeric CVSS score (most authoritative severity source)
+- nvd_severity → plain label (CRITICAL/HIGH/MEDIUM/LOW)
+- NVD join may 429 without API key — query still returns OSV+KEV data if NVD fails
 
-### NVD
-- No Coral source. Use HTTP: GET https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-XXXX-XXXXX
+### NVD (via Coral — rate-limited without API key)
+- \`nvd.vulnerabilities\` — columns: cve_id, source_identifier, published, last_modified, vuln_status, description; filter: cve_id_filter, pub_start_date, pub_end_date, cvss_v3_severity, keyword_search
+- \`nvd.cvss_v3\` — columns: cve_id, base_score, base_severity, vector_string, exploitability_score, impact_score, attack_vector, attack_complexity, privileges_required, user_interaction, scope, confidentiality_impact, integrity_impact, availability_impact; filter: cve_id_filter
+- \`nvd.cvss_v2\` — columns: cve_id, base_score, severity, vector_string, exploitability_score, impact_score; filter: cve_id_filter
+- \`nvd.references\` — columns: cve_id, references (JSON); filter: cve_id_filter
+- Use LEFT JOIN on aliases LIKE for cross-join; use cve_id_filter for direct lookup
 
 ## Rules
 - Prefer the cross-join query over two separate queries — it's more efficient and gives KEV status in one round trip.
