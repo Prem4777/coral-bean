@@ -184,26 +184,23 @@ export class RateLimitError extends Error {
 }
 
 export async function queryOSV(dep: Dependency): Promise<Vulnerability[]> {
-  // 3-way cross-join: OSV × CISA KEV × NVD — all via Coral
+  // 2-way cross-join: OSV × CISA KEV via Coral
+  // NVD join removed — causes 500s due to NVD rate limits behind Coral
   const rows = extractRows(
     await runCoralSql(
       `SELECT v.id, v.summary, v.details, v.severity, v.affected, v.references, v.aliases,
               k.cve_id          AS kev_cve_id,
               k.vulnerability_name AS kev_name,
               k.date_added      AS kev_date_added,
-              k.required_action AS kev_required_action,
-              n.base_score      AS nvd_base_score,
-              n.base_severity   AS nvd_severity
+              k.required_action AS kev_required_action
        FROM osv.query_by_version v
        LEFT JOIN cisa_kev.vulnerabilities k
          ON v.aliases LIKE '%' || k.cve_id || '%'
-       LEFT JOIN nvd.cvss_v3 n
-         ON v.aliases LIKE '%' || n.cve_id || '%'
        WHERE v.package_name = ${sqlString(dep.name)}
          AND v.ecosystem    = ${sqlString(dep.ecosystem)}
          AND v.version      = ${sqlString(dep.version)}
        LIMIT 50`,
-      `OSV × KEV × NVD — ${dep.name}@${dep.version} (${dep.ecosystem})`,
+      `OSV × KEV — ${dep.name}@${dep.version} (${dep.ecosystem})`,
     ),
   );
   return rows.map((v: any) => mapOsvRow(v));
@@ -222,13 +219,8 @@ function mapOsvRow(v: any): Vulnerability {
     refs.find((r) => r.url?.includes("github.com/advisories"))?.url ??
     refs[0]?.url ?? null;
 
-  // Severity: NVD (most authoritative) → OSV CVSS vector → fallback
+  // Severity: OSV CVSS vector → CVSS vector parse → fallback
   let severity: string | null = null;
-  if (v.nvd_severity) severity = normalizeSeverityLabel(String(v.nvd_severity));
-  if (!severity && v.nvd_base_score != null) {
-    const n = parseFloat(String(v.nvd_base_score));
-    if (!isNaN(n)) severity = cvssScoreToLabel(n);
-  }
   if (!severity) severity = extractSeverity(severityRaw);
 
   const affectedVersions: string[] = [];
