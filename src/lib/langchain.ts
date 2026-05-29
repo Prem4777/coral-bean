@@ -53,12 +53,11 @@ export async function runScanChain(
   const parsed = parseRepo(repoUrl);
   if (!parsed) throw new Error("Invalid repo URL");
 
-  const token = process.env.GITHUB_TOKEN;
   const { owner, repo } = parsed;
 
   // ── SHA-based cache check ────────────────────────────────────────────────
   onProgress?.({ type: "started", message: `Resolving commit SHA for ${owner}/${repo}` });
-  const commitSha = await fetchCommitSha(owner, repo, token);
+  const commitSha = await fetchCommitSha(owner, repo);
 
   if (commitSha) {
     const cached = await findScanByCommitSha(commitSha);
@@ -114,20 +113,13 @@ export async function runScanChain(
     ];
 
     const fetchResults = await Promise.allSettled(
-      manifests.map((path) => fetchGitHubFile(owner, repo, path, token)),
+      manifests.map((path) => fetchGitHubFile(owner, repo, path)),
     );
 
     const fetched: Record<string, string | null> = {};
     fetchResults.forEach((result, i) => {
       const path = manifests[i];
-      if (result.status === "fulfilled") {
-        fetched[path] = result.value;
-      } else {
-        if (result.reason instanceof RateLimitError) {
-          rateLimitedSources.push("GitHub");
-        }
-        fetched[path] = null;
-      }
+      fetched[path] = result.status === "fulfilled" ? result.value : null;
       onProgress?.({
         type: "fetched",
         message: fetched[path] ? `Fetched ${path}` : `Missing ${path}`,
